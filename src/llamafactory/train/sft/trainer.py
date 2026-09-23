@@ -179,6 +179,10 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
         else:
             labels = inputs.get("labels")
 
+        # xink：从 inputs 中移除 video_metadata，以避免在生成过程中传递给模型
+        inputs.pop("video_metadata", None)
+        gen_kwargs.pop("video_metadata", None)
+    
         loss, generated_tokens, _ = super().prediction_step(
             model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
