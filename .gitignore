@@ -164,7 +164,7 @@ cython_debug/
 
 # uv
 uv.lock
-
+uv*.lock*
 # macOS
 .DS_Store
 

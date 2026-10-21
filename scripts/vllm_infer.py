@@ -17,6 +17,7 @@ import json
 import time
 
 import av
+import os
 import fire
 from datasets import load_dataset
 from eval_bleu_rouge import compute_metrics
@@ -173,24 +174,61 @@ def vllm_infer(
                     video_maxlen=video_maxlen,
                 )["videos"]
                 if need_video_kwargs:
-                    container = av.open(video[0], "r")
-                    video_stream = next(stream for stream in container.streams if stream.type == "video")
-                    sampling_indices = template_obj.mm_plugin._get_video_sample_indices(
-                        video_stream, video_fps, video_maxlen
+                    video_input = video[0]
+
+                    if isinstance(video_input, (str, os.PathLike)):
+                        # 情形一：真正的 mp4/mkv 等视频文件
+                        container = av.open(video_input, "r")
+                        video_stream = next(
+                            stream for stream in container.streams
+                            if stream.type == "video"
+                        )
+
+                        sampling_indices = template_obj.mm_plugin._get_video_sample_indices(
+                            video_stream,
+                            video_fps,
+                            video_maxlen,
+                        )
+                        total_frames = video_stream.frames
+
+                        video_metadata_kwargs = {
+                            "fps": getattr(
+                                tokenizer_module["processor"],
+                                "video_fps",
+                                24.0,
+                            ),
+                            "do_sample_frames": False,
+                            "total_num_frames": total_frames,
+                        }
+
+                        video_metadata = {
+                            "fps": video_fps,
+                            "frames_indices": sampling_indices,
+                            "total_num_frames": total_frames,
+                            "video_backend": "opencv",
+                        }
+
+                    else:
+                        # 情形二：已经采样好的帧路径列表
+                        sampled_frames = video_input
+                        total_frames = len(sampled_frames)
+
+                        video_metadata_kwargs = {
+                            "do_sample_frames": False,
+                            "total_num_frames": total_frames,
+                        }
+
+                        video_metadata = {
+                            "fps": video_fps,
+                            "frames_indices": list(range(total_frames)),
+                            "total_num_frames": total_frames,
+                            "video_backend": "opencv",
+                        }
+
+                    multi_modal_data["video"] = (
+                        multi_modal_data["video"],
+                        video_metadata,
                     )
-                    total_frames = video_stream.frames
-                    video_metadata_kwargs = {
-                        "fps": getattr(tokenizer_module["processor"], "video_fps", 24.0),
-                        "do_sample_frames": False,
-                        "total_num_frames": total_frames,
-                    }
-                    video_metadata = dict(
-                        fps=video_fps,
-                        frames_indices=sampling_indices,
-                        total_num_frames=total_frames,
-                        video_backend="opencv",
-                    )
-                    multi_modal_data["video"] = (multi_modal_data["video"], video_metadata)
 
             if batch["audios"][j] is not None:
                 audio = batch["audios"][j]
