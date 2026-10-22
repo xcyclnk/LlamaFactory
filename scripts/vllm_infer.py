@@ -262,6 +262,7 @@ def vllm_infer(
 
     model_predict_end_time = time.time()
     # Write all results at once outside the loop
+    os.makedirs(os.path.dirname(save_name), exist_ok=True)
     with open(save_name, "w", encoding="utf-8") as f:
         for text, pred, label in zip(all_prompts, all_preds, all_labels):
             f.write(json.dumps({"prompt": text, "predict": pred, "label": label}, ensure_ascii=False) + "\n")
