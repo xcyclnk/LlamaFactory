@@ -4,8 +4,8 @@ CUDA_VISIBLE_DEVICES=0 \
 /data/xink/projects/LlamaFactory/.venv-vllm/bin/python scripts/vllm_infer.py \
   --model_name_or_path /data/LLM_model/Qwen3-VL-8B-Instruct \
   --template qwen3_vl_nothink \
-  --dataset mlvu_selection_event \
-  --dataset_dir /data/xink/projects/data/MLVU/event_llamafac \
+  --dataset videomme_local \
+  --dataset_dir /data/xink/projects/data/Video-MME/llamafac \
   --cutoff_len 32768 \
   --video_fps 1 \
   --video_maxlen 128 \
@@ -13,4 +13,4 @@ CUDA_VISIBLE_DEVICES=0 \
   --image_max_pixels 65536 \
   --max_new_tokens 128 \
   --batch_size 32 \
-  --save_name /data/xink/projects/LlamaFactory/saves/predict_base/mlvu_event_qwen3-vl-8b-instruct/selection_generated_predictions.jsonl
+  --save_name /data/xink/projects/LlamaFactory/saves/predict_base/videomme_qwen3vl-8b-instruct/vllm_generated_predictions.jsonl
