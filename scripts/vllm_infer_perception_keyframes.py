@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
         "--max-events",
         type=int,
         default=128,
-        help="Fail if a video exceeds this event count; 0 disables the guard.",
+        help="Keep the earliest N chronological events; 0 keeps all events.",
     )
     parser.add_argument("--request-batch-size", type=int, default=16)
     parser.add_argument("--max-new-tokens", type=int, default=8)
@@ -216,9 +216,11 @@ def load_event_bank(
     if not events:
         raise ValueError(f"No events in {memory_path}")
     if max_events and len(events) > max_events:
-        raise ValueError(
-            f"{video_uid} has {len(events)} events, exceeding --max-events {max_events}; "
-            "no event was dropped"
+        original_count = len(events)
+        events = events[:max_events]
+        print(
+            f"[truncate] {video_uid}: keeping the earliest {max_events} of "
+            f"{original_count} chronological events"
         )
     return memory_path, events
 
