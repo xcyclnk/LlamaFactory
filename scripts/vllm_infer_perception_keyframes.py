@@ -53,20 +53,73 @@ def load_json(path: Path) -> Any:
 
 
 def load_questions(path: Path) -> list[dict[str, Any]]:
-    with path.open("r", encoding="utf-8") as file:
-        records = [json.loads(line) for line in file if line.strip()]
+    """Load either native CG-Bench JSON or the legacy compact JSONL."""
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError(f"No questions found in {path}")
+
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        records = [json.loads(line) for line in text.splitlines() if line.strip()]
+    else:
+        if isinstance(decoded, list):
+            records = decoded
+        elif isinstance(decoded, dict):
+            records = [decoded]
+        else:
+            raise TypeError(f"Expected a JSON array, object, or JSONL records in {path}")
+
     if not records:
         raise ValueError(f"No questions found in {path}")
 
-    required = {"row_index", "qid", "video_uid", "question", "choices", "answer"}
+    normalized: list[dict[str, Any]] = []
+    required = {"qid", "video_uid", "question", "choices"}
     for position, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise TypeError(f"Question row {position} is not an object")
         missing = sorted(required - record.keys())
         if missing:
             raise ValueError(f"Question row {position} is missing: {', '.join(missing)}")
-    row_indices = [int(record["row_index"]) for record in records]
-    if sorted(row_indices) != list(range(len(records))):
-        raise ValueError("row_index values must be unique and contiguous from zero")
-    return records
+
+        choices = record["choices"]
+        if not isinstance(choices, list) or not 2 <= len(choices) <= len(LETTERS):
+            raise ValueError(f"Question row {position} has invalid choices")
+        choices = [str(choice).strip() for choice in choices]
+
+        # Native CG-Bench stores the label in right_answer and the selected
+        # choice text in answer. The old compact JSONL stores the label in answer.
+        if "right_answer" in record:
+            answer = str(record["right_answer"]).strip().upper()
+            answer_text = record.get("answer")
+        else:
+            answer = str(record.get("answer", "")).strip().upper()
+            answer_text = None
+        if answer not in LETTERS[: len(choices)]:
+            raise ValueError(
+                f"Question row {position} has invalid answer label {answer!r}"
+            )
+        if answer_text is not None:
+            selected = choices[LETTERS.index(answer)].casefold()
+            if selected != str(answer_text).strip().casefold():
+                raise ValueError(
+                    f"Question row {position} has inconsistent right_answer and answer text"
+                )
+
+        normalized.append(
+            {
+                "row_index": position,
+                "qid": record["qid"],
+                "video_uid": str(record["video_uid"]),
+                "question": str(record["question"]).strip(),
+                "choices": choices,
+                "answer": answer,
+                "domain": record.get("domain"),
+                "sub_category": record.get("sub_category"),
+            }
+        )
+
+    return normalized
 
 
 def parse_mmss(value: Any) -> float:
