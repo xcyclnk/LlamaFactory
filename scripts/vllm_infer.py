@@ -21,6 +21,7 @@ import os
 import fire
 from datasets import load_dataset
 from eval_bleu_rouge import compute_metrics
+from preextracted_video_metadata import load_qwen3vl_video_metadata
 from tqdm import tqdm
 from transformers import Seq2SeqTrainingArguments
 
@@ -212,18 +213,21 @@ def vllm_infer(
                         # 情形二：已经采样好的帧路径列表
                         sampled_frames = video_input
                         total_frames = len(sampled_frames)
-
-                        video_metadata_kwargs = {
-                            "do_sample_frames": False,
-                            "total_num_frames": total_frames,
-                        }
-
-                        video_metadata = {
-                            "fps": video_fps,
-                            "frames_indices": list(range(total_frames)),
-                            "total_num_frames": total_frames,
-                            "video_backend": "opencv",
-                        }
+                        timestamp_metadata = load_qwen3vl_video_metadata(sampled_frames)
+                        if timestamp_metadata is not None:
+                            video_metadata_kwargs, video_metadata = timestamp_metadata
+                        else:
+                            video_metadata_kwargs = {
+                                "fps": video_fps,
+                                "do_sample_frames": False,
+                                "total_num_frames": total_frames,
+                            }
+                            video_metadata = {
+                                "fps": video_fps,
+                                "frames_indices": list(range(total_frames)),
+                                "total_num_frames": total_frames,
+                                "video_backend": "opencv",
+                            }
 
                     multi_modal_data["video"] = (
                         multi_modal_data["video"],
