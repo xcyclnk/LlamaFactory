@@ -28,12 +28,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--template", default="qwen3_vl_nothink")
     parser.add_argument("--cutoff-len", type=int, default=32768)
     parser.add_argument("--image-min-pixels", type=int, default=4096)
-    parser.add_argument("--image-max-pixels", type=int, default=65536)
+    parser.add_argument("--image-max-pixels", type=int, default=768 * 768)
     parser.add_argument(
         "--max-events",
         type=int,
         default=128,
-        help="Keep the earliest N chronological events; 0 keeps all events.",
+        help="Uniformly sample N events across the full timeline; 0 keeps all events.",
     )
     parser.add_argument("--request-batch-size", type=int, default=16)
     parser.add_argument("--max-new-tokens", type=int, default=8)
@@ -183,12 +183,29 @@ def legacy_safe_filename(uid: str) -> str:
     return f"{cleaned or 'video'}_{digest}"
 
 
+def uniformly_sample_events(
+    events: list[dict[str, Any]], sample_count: int
+) -> list[dict[str, Any]]:
+    """Return endpoint-inclusive, uniformly spaced chronological events."""
+    if sample_count < 1:
+        raise ValueError("sample_count must be positive")
+    if len(events) <= sample_count:
+        return events
+    if sample_count == 1:
+        return [events[len(events) // 2]]
+    positions = [
+        round(index * (len(events) - 1) / (sample_count - 1))
+        for index in range(sample_count)
+    ]
+    return [events[position] for position in positions]
+
+
 def load_event_bank(
     video_uid: str,
     memory_dir: Path,
     path_root: Path,
     max_events: int,
-) -> tuple[Path, list[dict[str, Any]]]:
+) -> tuple[Path, list[dict[str, Any]], dict[str, float | int]]:
     candidates = [memory_dir / f"{video_uid}.json"]
     legacy_path = memory_dir / f"{legacy_safe_filename(video_uid)}.json"
     if legacy_path != candidates[0]:
@@ -206,6 +223,7 @@ def load_event_bank(
     fps = float(video.get("fps", 0)) if isinstance(video, dict) else 0.0
     if not math.isfinite(fps) or fps < 0:
         raise ValueError(f"Invalid FPS in {memory_path}: {fps!r}")
+    metadata_fps = fps if fps > 0 else 1.0
 
     events: list[dict[str, Any]] = []
     for source_position, event in enumerate(memory["events"]):
@@ -215,14 +233,18 @@ def load_event_bank(
         key_frame = event.get("key_frame")
         if fps > 0 and isinstance(key_frame, int) and key_frame >= 0:
             key_timestamp_sec = key_frame / fps
+            source_frame_index = key_frame
         else:
             key_timestamp_sec = (start_sec + end_sec) / 2.0
+            # vLLM video metadata requires integer source-frame indices.
+            source_frame_index = int(round(key_timestamp_sec * metadata_fps))
         events.append(
             {
                 "id": event.get("id", source_position),
                 "start_sec": start_sec,
                 "end_sec": end_sec,
                 "key_timestamp_sec": key_timestamp_sec,
+                "source_frame_index": source_frame_index,
                 "keyframe": resolve_keyframe(event.get("frame_dir"), path_root, memory_path),
             }
         )
@@ -232,12 +254,26 @@ def load_event_bank(
         raise ValueError(f"No events in {memory_path}")
     if max_events and len(events) > max_events:
         original_count = len(events)
-        events = events[:max_events]
+        events = uniformly_sample_events(events, max_events)
         print(
-            f"[truncate] {video_uid}: keeping the earliest {max_events} of "
-            f"{original_count} chronological events"
+            f"[sample] {video_uid}: uniformly selecting {max_events} of "
+            f"{original_count} chronological events across the full timeline"
         )
-    return memory_path, events
+
+    total_frames = 0
+    if isinstance(video, dict):
+        try:
+            total_frames = int(video.get("total_frames", 0))
+        except (TypeError, ValueError):
+            total_frames = 0
+    minimum_total = max(
+        int(math.ceil(max(event["source_frame_index"] for event in events))) + 1,
+        int(math.ceil(max(event["end_sec"] for event in events) * metadata_fps)) + 1,
+        1,
+    )
+    total_frames = max(total_frames, minimum_total)
+    timing = {"fps": metadata_fps, "total_num_frames": total_frames}
+    return memory_path, events, timing
 
 
 def build_timeline(events: list[dict[str, Any]]) -> str:
@@ -383,7 +419,7 @@ def main() -> None:
 
     with partial_path.open("w", encoding="utf-8", newline="\n") as partial_file:
         for video_number, video_uid in enumerate(tqdm(sorted(grouped), desc="Videos"), start=1):
-            memory_path, events = load_event_bank(
+            memory_path, events, timing = load_event_bank(
                 video_uid,
                 args.memory_dir,
                 args.path_root,
@@ -395,14 +431,19 @@ def main() -> None:
                 [frame_paths],
                 image_max_pixels=args.image_max_pixels,
                 image_min_pixels=args.image_min_pixels,
-                video_fps=1.0,
+                video_fps=timing["fps"],
                 video_maxlen=len(frame_paths),
             )["videos"]
-            metadata_kwargs = {"do_sample_frames": False, "total_num_frames": len(frame_paths)}
+            metadata_kwargs = {
+                "fps": timing["fps"],
+                "do_sample_frames": False,
+                "total_num_frames": timing["total_num_frames"],
+            }
             video_metadata = {
-                "fps": 1.0,
-                "frames_indices": list(range(len(frame_paths))),
-                "total_num_frames": len(frame_paths),
+                "fps": timing["fps"],
+                "frames_indices": [event["source_frame_index"] for event in events],
+                "total_num_frames": timing["total_num_frames"],
+                "duration": (timing["total_num_frames"] - 1) / timing["fps"],
                 "video_backend": "opencv",
             }
             multimodal_data = {"video": (regularized, video_metadata)}
@@ -512,6 +553,8 @@ def main() -> None:
         "image_max_pixels": args.image_max_pixels,
         "perception_text_included": False,
         "timestamps_in_prompt": True,
+        "timestamps_in_video_metadata": True,
+        "event_sampling": "uniform_full_timeline",
         "predictions": str(args.save_name),
         "partial_predictions": str(partial_path),
         "progress": str(progress_path),
