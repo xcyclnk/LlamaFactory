@@ -174,15 +174,30 @@ def resolve_keyframe(frame_dir: Any, path_root: Path, memory_path: Path) -> Path
     )
 
 
+def legacy_safe_filename(uid: str) -> str:
+    """Reproduce the old event-builder filename mapping for compatibility."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", uid).strip("._")
+    if cleaned == uid and cleaned:
+        return cleaned
+    digest = hashlib.sha1(uid.encode("utf-8")).hexdigest()[:10]
+    return f"{cleaned or 'video'}_{digest}"
+
+
 def load_event_bank(
     video_uid: str,
     memory_dir: Path,
     path_root: Path,
     max_events: int,
 ) -> tuple[Path, list[dict[str, Any]]]:
-    memory_path = memory_dir / f"{video_uid}.json"
-    if not memory_path.is_file():
-        raise FileNotFoundError(f"Missing memory file: {memory_path}")
+    candidates = [memory_dir / f"{video_uid}.json"]
+    legacy_path = memory_dir / f"{legacy_safe_filename(video_uid)}.json"
+    if legacy_path != candidates[0]:
+        candidates.append(legacy_path)
+    memory_path = next((path for path in candidates if path.is_file()), None)
+    if memory_path is None:
+        raise FileNotFoundError(
+            "Missing memory file; tried: " + ", ".join(str(path) for path in candidates)
+        )
     memory = load_json(memory_path)
     if not isinstance(memory, dict) or not isinstance(memory.get("events"), list):
         raise ValueError(f"Invalid memory file: {memory_path}")
